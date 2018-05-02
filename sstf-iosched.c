@@ -11,8 +11,8 @@
 struct sstf_data {
 	struct list_head queue;
 
-   sector_t current_head_pos;
-   int direction;
+	sector_t current_head_pos;
+	int direction;
 };
 
 static void sstf_merged_requests(struct request_queue *que, struct request *req, struct request *next) {
@@ -24,37 +24,37 @@ static int sstf_dispatch(struct request_queue *que, int force) {
 
 	if (!list_empty(&ssd->queue)) {
 		struct request *req, *next_req, *prev_req;
-      struct list_head *list;
+		struct list_head *list;
 
-      struct current_pos = blk_rq_pos(req);
+		struct current_pos = blk_rq_pos(req);
 
-      next_req = list_entry(ssd->queue.next, struct request, queuelist);
-      prev_req = list_entry(ssd->queue.prev, struct request, queuelist);
+		next_req = list_entry(ssd->queue.next, struct request, queuelist);
+		prev_req = list_entry(ssd->queue.prev, struct request, queuelist);
 
-      if (next_req == prev_req) {
-         req = next_req;
-      } else {
-         /* forward */
-         if(ssd->direction == 1) {
-            if(next_req->__sector > ssd->current_head_pos) {
-               req = next_req;
-            } else {
-               ssd->direction = 0;
-               req = prev_req;
-            }
-         } else {
-            if(prev_req->__sector < ssd->current_head_pos) {
-               req = prev_req;
-            } else {
-               ssd->direction = 1;
-               req = next_req;
-            }
-         }
-      }
+		if (next_req == prev_req) {
+			req = next_req;
+		} else {
+			/* forward */
+			if(ssd->direction == 1) {
+				if(next_req->__sector > ssd->current_head_pos) {
+					req = next_req;
+				} else {
+					ssd->direction = 0;
+					req = prev_req;
+				}
+			} else {
+				if(prev_req->__sector < ssd->current_head_pos) {
+					req = prev_req;
+				} else {
+					ssd->direction = 1;
+					req = next_req;
+				}
+			}
+		}
 
 		list_del_init(&req->queuelist);
 
-      ssd->current_head_pos = blk_rq_pos(req) + blk_rq_sectors(req);
+		ssd->current_head_pos = blk_rq_pos(req) + blk_rq_sectors(req);
 
 		elv_dispatch_sort(que, req);
 		return 1;
@@ -64,23 +64,23 @@ static int sstf_dispatch(struct request_queue *que, int force) {
 
 static void sstf_add_request(struct request_queue *que, struct request *req) {
 	struct sstf_data *ssd = que->elevator->elevator_data;
-   struct request *prev_req, *next_req;
+	struct request *prev_req, *next_req;
 
-   if(list_empty(&ssd->queue)) {
-      list_add(&req->queuelist, &ssd->queue);
-   }
+	if(list_empty(&ssd->queue)) {
+		list_add(&req->queuelist, &ssd->queue);
+	}
 
-   if(list_empty(&ssd->queue)) {
-      next_req = list_entry(ssd->queue.next, struct request, queuelist);
-      prev_req = list_entry(ssd->queue.prev, struct request, queuelist);
+	if(list_empty(&ssd->queue)) {
+		next_req = list_entry(ssd->queue.next, struct request, queuelist);
+		prev_req = list_entry(ssd->queue.prev, struct request, queuelist);
 
 
-      while (blk_rq_pos(req) > blk_rq_pos(next_req)) {
-         next_req = list_entry(next_req->queuelist.next, struct request, queuelist);
-         prev_req = list_entry(prev_req->queuelist.prev, struct request, queuelist);
-      }
+		while (blk_rq_pos(req) > blk_rq_pos(next_req)) {
+			next_req = list_entry(next_req->queuelist.next, struct request, queuelist);
+			prev_req = list_entry(prev_req->queuelist.prev, struct request, queuelist);
+		}
 
-   }
+	}
 
 	list_add_tail(&req->queuelist, &ssd->queue);
 }
