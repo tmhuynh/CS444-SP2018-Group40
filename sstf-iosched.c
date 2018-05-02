@@ -1,5 +1,7 @@
 /*
  * Elevator LOOK I/O Scheduler
+ * Reference: 
+ * http://classes.engr.oregonstate.edu/eecs/fall2011/cs411/proj03.pdf
  */
 #include <linux/blkdev.h>
 #include <linux/elevator.h>
