@@ -1,0 +1,224 @@
+diff -rupN linux-yocto-3.19.2-clean/block/Kconfig.iosched linux-yocto-3.19.2-working/block/Kconfig.iosched
+--- linux-yocto-3.19.2-clean/block/Kconfig.iosched	2015-03-18 06:11:52.000000000 -0700
++++ linux-yocto-3.19.2-working/block/Kconfig.iosched	2018-05-04 21:25:54.605478906 -0700
+@@ -12,6 +12,13 @@ config IOSCHED_NOOP
+ 	  that do their own scheduling and require only minimal assistance from
+ 	  the kernel.
+ 
++config IOSCHED_SSTF
++	tristate "SSTF I/O scheduler"
++	default y
++	---help---
++	  The sstf I/O scheduler is simple and compact. We wrote it real good.
++
++
+ config IOSCHED_DEADLINE
+ 	tristate "Deadline I/O scheduler"
+ 	default y
+@@ -55,6 +62,9 @@ choice
+ 	config DEFAULT_NOOP
+ 		bool "No-op"
+ 
++	config DEFAULT_SSTF
++		bool "SSTF" if IOSCHED_SSTF=y
++
+ endchoice
+ 
+ config DEFAULT_IOSCHED
+@@ -62,6 +72,7 @@ config DEFAULT_IOSCHED
+ 	default "deadline" if DEFAULT_DEADLINE
+ 	default "cfq" if DEFAULT_CFQ
+ 	default "noop" if DEFAULT_NOOP
++	default "sstf" if DEFAULT_SSTF
+ 
+ endmenu
+ 
+diff -rupN linux-yocto-3.19.2-clean/block/Makefile linux-yocto-3.19.2-working/block/Makefile
+--- linux-yocto-3.19.2-clean/block/Makefile	2015-03-18 06:11:52.000000000 -0700
++++ linux-yocto-3.19.2-working/block/Makefile	2018-05-02 14:52:17.816294111 -0700
+@@ -1,16 +1,14 @@
+ #
+-# Makefile for the kernel block layer
++# Makefile for the kernel block layeri
+ #
+ 
+-obj-$(CONFIG_BLOCK) := bio.o elevator.o blk-core.o blk-tag.o blk-sysfs.o \
+-			blk-flush.o blk-settings.o blk-ioc.o blk-map.o \
+-			blk-exec.o blk-merge.o blk-softirq.o blk-timeout.o \
+-			blk-iopoll.o blk-lib.o blk-mq.o blk-mq-tag.o \
+-			blk-mq-sysfs.o blk-mq-cpu.o blk-mq-cpumap.o ioctl.o \
+-			genhd.o scsi_ioctl.o partition-generic.o ioprio.o \
+-			partitions/
++obj-$(CONFIG_BLOCK) := elevator.o blk-core.o blk-tag.o blk-sysfs.o \
++   blk-flush.o blk-settings.o blk-ioc.o blk-map.o \
++   blk-exec.o blk-merge.o blk-softirq.o blk-timeout.o \
++   blk-iopoll.o blk-lib.o blk-mq.o blk-mq-tag.o \
++   blk-mq-sysfs.o blk-mq-cpu.o blk-mq-cpumap.o ioctl.o \
++   genhd.o scsi_ioctl.o partition-generic.o partitions/
+ 
+-obj-$(CONFIG_BOUNCE)	+= bounce.o
+ obj-$(CONFIG_BLK_DEV_BSG)	+= bsg.o
+ obj-$(CONFIG_BLK_DEV_BSGLIB)	+= bsg-lib.o
+ obj-$(CONFIG_BLK_CGROUP)	+= blk-cgroup.o
+@@ -20,6 +18,7 @@ obj-$(CONFIG_IOSCHED_DEADLINE)	+= deadli
+ obj-$(CONFIG_IOSCHED_CFQ)	+= cfq-iosched.o
+ 
+ obj-$(CONFIG_BLOCK_COMPAT)	+= compat_ioctl.o
++obj-$(CONFIG_BLK_DEV_INTEGRITY)	+= blk-integrity.o
+ obj-$(CONFIG_BLK_CMDLINE_PARSER)	+= cmdline-parser.o
+-obj-$(CONFIG_BLK_DEV_INTEGRITY) += bio-integrity.o blk-integrity.o t10-pi.o
+ 
++obj-$(CONFIG_IOSCHED_SSTF)	+= sstf-iosched.o
+diff -rupN linux-yocto-3.19.2-clean/block/sstf-iosched.c linux-yocto-3.19.2-working/block/sstf-iosched.c
+--- linux-yocto-3.19.2-clean/block/sstf-iosched.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-yocto-3.19.2-working/block/sstf-iosched.c	2018-05-06 21:28:26.885252220 -0700
+@@ -0,0 +1,149 @@
++#include <linux/blkdev.h>
++#include <linux/blkdev.h>
++#include <linux/elevator.h>
++#include <linux/bio.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/list.h>
++#include <linux/kernel.h>
++
++
++struct sstf_data {
++	struct list_head queue;
++};
++
++static void sstf_merged_requests(struct request_queue *q, struct request *rq,
++				 struct request *next)
++{
++	list_del_init(&next->queuelist);
++}
++
++static int sstf_dispatch(struct request_queue *q, int force)
++{
++	struct sstf_data *data = q->elevator->elevator_data;
++
++	if (!list_empty(&data->queue)) {
++		struct request *rq = list_entry(data->queue.next, struct request, queuelist);
++
++		printk(KERN_DEBUG "SSTF: sector is dispatched at: %llu\n",blk_rq_pos(rq));
++
++		list_del_init(&rq->queuelist);
++
++		elv_dispatch_add_tail(q, rq);
++		
++		return 1;
++	}
++	return 0;
++}
++
++static void sstf_add_request(struct request_queue *q, struct request *rq)
++{
++	struct sstf_data *data = q->elevator->elevator_data;
++	struct list_head *curr;
++	struct list_head *temp;
++	struct request *current_node;
++
++	if (list_empty(&data->queue)) {
++		printk(KERN_DEBUG "SSTF: queue empty. \n");
++
++		list_add(&rq->queuelist, &data->queue);
++	} else {
++		list_for_each_safe(curr, temp, &data->queue) {
++			current_node = list_entry(curr, struct request, queuelist);
++
++			if (blk_rq_pos(current_node) < blk_rq_pos(rq)) {
++				printk(KERN_DEBUG "SSTF: adding a request \n");
++
++				list_add(&rq->queuelist, &current_node->queuelist);
++				break;
++			}
++		}
++	}
++}
++
++static struct request *
++sstf_former_request(struct request_queue *q, struct request *rq)
++{
++	struct sstf_data *data = q->elevator->elevator_data;
++
++	if (rq->queuelist.prev == &data->queue)
++		return NULL;
++
++	return list_entry(rq->queuelist.prev, struct request, queuelist);
++}
++
++static struct request *
++sstf_latter_request(struct request_queue *q, struct request *rq)
++{
++	struct sstf_data *data = q->elevator->elevator_data;
++
++	if (rq->queuelist.next == &data->queue)
++		return NULL;
++	return list_entry(rq->queuelist.next, struct request, queuelist);
++}
++
++static int sstf_init_queue(struct request_queue *q, struct elevator_type *e)
++{
++	struct sstf_data *data;
++	struct elevator_queue *eq;
++
++	eq = elevator_alloc(q, e);
++	if (!eq)
++		return -ENOMEM;
++
++	data = kmalloc_node(sizeof(*data), GFP_KERNEL, q->node);
++	if (!data) {
++		kobject_put(&eq->kobj);
++		return -ENOMEM;
++	}
++	eq->elevator_data = data;
++
++	INIT_LIST_HEAD(&data->queue);
++
++	spin_lock_irq(q->queue_lock);
++	q->elevator = eq;
++	spin_unlock_irq(q->queue_lock);
++
++	printk(KERN_DEBUG "SSTF: queue created\n");
++	return 0;
++}
++
++static void sstf_exit_queue(struct elevator_queue *e)
++{
++	struct sstf_data *data = e->elevator_data;
++
++	BUG_ON(!list_empty(&data->queue));
++	kfree(data);
++}
++
++static struct elevator_type elevator_sstf = {
++	.ops = {
++		.elevator_merge_req_fn		= sstf_merged_requests,
++		.elevator_dispatch_fn		= sstf_dispatch,
++		.elevator_add_req_fn		= sstf_add_request,
++		.elevator_former_req_fn		= sstf_former_request,
++		.elevator_latter_req_fn		= sstf_latter_request,
++		.elevator_init_fn		= sstf_init_queue,
++		.elevator_exit_fn		= sstf_exit_queue,
++	},
++	.elevator_name = "sstf",
++	.elevator_owner = THIS_MODULE,
++};
++
++static int __init sstf_init(void)
++{
++	return elv_register(&elevator_sstf);
++}
++
++static void __exit sstf_exit(void)
++{
++	elv_unregister(&elevator_sstf);
++}
++
++module_init(sstf_init);
++module_exit(sstf_exit);
++MODULE_AUTHOR("Amber Horvath, Davian Lukman, Trung Huynh");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("LOOK I/O scheduler");
++
